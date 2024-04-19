@@ -1,5 +1,5 @@
 """JacLang FastAPI Security Utilities."""
 
-from .authenticator import authenticator, create_token, verify
+from .authenticator import authenticator, create_code, create_token, verify_code
 
-__all__ = ["authenticator", "create_token", "verify"]
+__all__ = ["authenticator", "create_code", "create_token", "verify_code"]

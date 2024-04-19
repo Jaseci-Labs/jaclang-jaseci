@@ -2,7 +2,7 @@
 
 from typing import Any, Mapping, Type, Union, cast
 
-from bcrypt import gensalt, hashpw
+from passlib.hash import pbkdf2_sha512
 
 from pydantic import BaseModel, EmailStr, create_model
 from pydantic.fields import FieldInfo
@@ -25,7 +25,7 @@ class UserCommon(BaseModel):
         """Return BaseModel.model_dump where the password is hashed."""
         data = self.serialize()
         if isinstance(self.password, str):
-            data["password"] = hashpw(self.password.encode(), gensalt())
+            data["password"] = pbkdf2_sha512.hash(self.password).encode()
         return data
 
 
@@ -36,6 +36,7 @@ class User(UserCommon):
     email: EmailStr
     password: bytes
     root_id: str
+    is_activated: bool = False
 
     class Collection(UserCollection["User"]):
         """UserCollection Integration."""
@@ -48,11 +49,10 @@ class User(UserCommon):
             This the default User parser after getting a single document.
             You may override this to specify how/which class it will be casted/based.
             """
+            doc = cast(dict, doc)
             return User.model()(
-                id=str(doc.get("_id")),
-                email=cast(str, doc.get("email")),
-                password=cast(bytes, doc.get("password")) or NULL_BYTES,
-                root_id=str(doc.get("root_id")),
+                id=str(doc.pop("_id")),
+                password=cast(bytes, doc.pop("password")) or NULL_BYTES,
                 **doc,
             )
 
@@ -77,5 +77,11 @@ class User(UserCommon):
         user_model["password"] = (str, ...)
         user_model.pop("id", None)
         user_model.pop("root_id", None)
+        user_model.pop("is_activated", None)
 
         return create_model("UserRegister", __base__=UserCommon, **user_model)
+
+    @staticmethod
+    def send_verification_code(code: str, email: str) -> None:
+        """Send verification code."""
+        pass

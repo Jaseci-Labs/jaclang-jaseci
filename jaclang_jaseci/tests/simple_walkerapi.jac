@@ -1,8 +1,9 @@
 """Example of simple walker walking nodes."""
 import:py from jaclang_jaseci, FastAPI, start;
-import:py from jaclang_jaseci.types, File, Files, OptFile, OptFiles, Defaults;
+import:py from jaclang_jaseci.types, File, Files, OptFile, OptFiles;
 import:py from jaclang_jaseci.models, User as BaseUser;
 import:py from jaclang_jaseci.plugins, specs, DocAnchor;
+import:py from jaclang_jaseci.utils, SendGridEmailer;
 
 # if possible to support this native class declaration
 ::py::
@@ -21,6 +22,12 @@ class User(BaseUser):
                 root_id=str(doc.pop("root_id")),
                 **doc,
             )
+
+    @staticmethod
+    def send_verification_code(code: str, email: str) -> None:
+        """Send verification code."""
+        SendGridEmailer.send_verification_code(code, email)
+
 ::py::
 
 node boy {
@@ -258,11 +265,22 @@ walker post_with_body_and_file {
     has val: int;
     has single: File;
     has multiple: Files;
+    has optional_val: int = 0;
 
-    obj Specs {}
+    can enter with `root entry {
+        print(self.val);
+        print(self.optional_val);
+        print(self.single);
+        print(self.multiple);
+    }
+
+    obj Specs {
+        static has auth: bool = False;
+    }
 }
 
 with entry:__main__ {
+    # SendGridEmailer.start();
     start(
         host="0.0.0.0",
         port=8000

@@ -19,7 +19,11 @@ from jaclang.core.construct import (
 from jaclang.plugin.default import hookimpl
 from jaclang.plugin.feature import JacFeature as Jac
 
-from pydantic import BaseModel, Field as pyField, create_model
+from orjson import loads
+
+from pydantic import BaseModel, Field as pyField, ValidationError, create_model
+
+from starlette.datastructures import UploadFile as BaseUploadFile
 
 from .common import JCONTEXT, JacContext
 from ..securities import authenticator
@@ -198,9 +202,9 @@ def populate_apis(cls: type) -> None:
         as_query: Union[str, list] = specs.as_query or []
         auth: bool = specs.auth or False
 
-        query = {}
-        body = {}
-        files = {}
+        query: dict[str, Any] = {}
+        body: dict[str, Any] = {}
+        files: dict[str, Any] = {}
 
         if path:
             if not path.startswith("/"):
@@ -214,42 +218,54 @@ def populate_apis(cls: type) -> None:
                 if file_type := FILE.get(cast(str, val.type)):  # type: ignore[arg-type]
                     files[key] = gen_model_field(file_type, val, True)  # type: ignore[arg-type]
                 else:
-                    consts = gen_model_field(locate(val.type), val, True)  # type: ignore[arg-type]
+                    consts = gen_model_field(locate(val.type), val)  # type: ignore[arg-type]
 
                     if as_query == "*" or key in as_query:
                         query[key] = consts
                     else:
                         body[key] = consts
 
-        payload = {
+        payload: dict[str, Any] = {
             "query": (
-                create_model(f"{cls.__name__.lower()}_query_model", **query),  # type: ignore[call-overload]
+                create_model(f"{cls.__name__.lower()}_query_model", **query),
                 Depends(),
             ),
             "files": (
-                create_model(f"{cls.__name__.lower()}_files_model", **files),  # type: ignore[call-overload]
+                create_model(f"{cls.__name__.lower()}_files_model", **files),
                 Depends(),
             ),
         }
 
+        body_model = None
         if body:
-            payload["body"] = (
-                create_model(f"{cls.__name__.lower()}_body_model", **body),  # type: ignore[call-overload]
-                ...,
-            )
+            body_model = create_model(f"{cls.__name__.lower()}_body_model", **body)
 
-        payload_model = create_model(f"{cls.__name__.lower()}_request_model", **payload)  # type: ignore[call-overload]
+            if files:
+                payload["body"] = (UploadFile, File(...))
+            else:
+                payload["body"] = (body_model, ...)
+
+        payload_model = create_model(f"{cls.__name__.lower()}_request_model", **payload)
 
         async def api_entry(
             request: Request,
             node: Optional[str],
             payload: payload_model = Depends(),  # type: ignore # noqa: B008
         ) -> ORJSONResponse:
+            pl = cast(BaseModel, payload).model_dump()
+            body = pl.get("body", {})
+
+            if isinstance(body, BaseUploadFile) and body_model:
+                body = loads(await body.read())
+                try:
+                    body = body_model(**body).model_dump()
+                except ValidationError as e:
+                    return ORJSONResponse({"detail": e.errors()})
+
             jctx = JacContext(request=request, entry=node)
             JCONTEXT.set(jctx)
 
-            pl = cast(BaseModel, payload).model_dump()
-            wlk = cls(**pl.get("body", {}), **pl["query"], **pl["files"])._jac_
+            wlk = cls(**body, **pl["query"], **pl["files"])._jac_
             await wlk.spawn_call(await jctx.get_entry())
             return ORJSONResponse(jctx.response(wlk.returns))
 
