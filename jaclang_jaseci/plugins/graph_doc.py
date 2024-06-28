@@ -1,5 +1,6 @@
 """Graph Docs Plugin."""
 
+from asyncio import get_event_loop
 from dataclasses import fields
 from typing import Callable, Optional, Type, Union
 
@@ -12,7 +13,6 @@ from .common import (
     EdgeArchitype,
     GenericEdge,
     JCLASS,
-    JCONTEXT,
     JType,
     JacContext,
     NodeArchitype,
@@ -59,7 +59,20 @@ class JacPlugin:
 
     @staticmethod
     @hookimpl
-    async def edge_ref(
+    def edge_ref(
+        node_obj: NodeArchitype | list[NodeArchitype],
+        target_obj: Optional[NodeArchitype | list[NodeArchitype]],
+        dir: EdgeDir,
+        filter_func: Optional[Callable[[list[EdgeArchitype]], list[EdgeArchitype]]],
+        edges_only: bool,
+    ) -> list[NodeArchitype] | list[EdgeArchitype]:
+        """Sync Jac's apply_dir stmt feature."""
+        return get_event_loop().run_until_complete(
+            JacPlugin._edge_ref(node_obj, target_obj, dir, filter_func, edges_only)
+        )
+
+    @staticmethod
+    async def _edge_ref(
         node_obj: NodeArchitype | list[NodeArchitype],
         target_obj: Optional[NodeArchitype | list[NodeArchitype]],
         dir: EdgeDir,
@@ -116,7 +129,19 @@ class JacPlugin:
 
     @staticmethod
     @hookimpl
-    async def disconnect(
+    def disconnect(
+        left: NodeArchitype | list[NodeArchitype],
+        right: NodeArchitype | list[NodeArchitype],
+        dir: EdgeDir,
+        filter_func: Optional[Callable[[list[EdgeArchitype]], list[EdgeArchitype]]],
+    ) -> bool:  # noqa: ANN401
+        """Sync Jac's disconnect operator feature."""
+        return get_event_loop().run_until_complete(
+            JacPlugin._disconnect(left, right, dir, filter_func)
+        )
+
+    @staticmethod
+    async def _disconnect(
         left: NodeArchitype | list[NodeArchitype],
         right: NodeArchitype | list[NodeArchitype],
         dir: EdgeDir,
@@ -127,27 +152,29 @@ class JacPlugin:
         left = [left] if isinstance(left, NodeArchitype) else left
         right = [right] if isinstance(right, NodeArchitype) else right
 
-        jctx: JacContext = JCONTEXT.get()
+        jctx: JacContext = JacContext.get_context()
         await jctx.populate_edges([edge for node in left for edge in node._jac_.edges])
 
         for i in left:
             async for e, s, t in async_filter(i._jac_.edges):
                 if not filter_func or filter_func([e]):
                     if (
-                        dir in [EdgeDir.OUT, EdgeDir.ANY]
+                        dir in ["OUT", "ANY"]
                         and i == s
                         and t in right
+                        and await s.is_allowed(e, jctx)
                         and await s.is_allowed(t, jctx)
                     ):
-                        await e.destroy()
+                        await e._destroy()
                         disconnect_occurred = True
                     if (
-                        dir in [EdgeDir.IN, EdgeDir.ANY]
+                        dir in ["IN", "ANY"]
                         and i == t
                         and s in right
+                        and await t.is_allowed(e, jctx)
                         and await t.is_allowed(s, jctx)
                     ):
-                        await e.destroy()
+                        await e._destroy()
                         disconnect_occurred = True
         return disconnect_occurred
 
@@ -175,6 +202,6 @@ def populate_collection(
             coll.__name__, (coll, ArchCollection), {"__collection__": collection}
         )
     else:
-        cls.Collection = type(coll.__name__, (coll,), {})  # type: ignore
+        cls.Collection = type(coll.__name__, (coll,), {"__collection__": collection})  # type: ignore
 
     return cls

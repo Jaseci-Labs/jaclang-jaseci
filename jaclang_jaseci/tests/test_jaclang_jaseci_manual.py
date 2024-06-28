@@ -16,7 +16,7 @@ class JacLangJaseciTests(IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         """Reset DB and wait for server."""
-        self.host = "http://0.0.0.0:8001"
+        self.host = "http://0.0.0.0:8000"
         BaseCollection.__client__ = None
         BaseCollection.__database__ = None
         self.client = BaseCollection.get_client()
@@ -199,6 +199,7 @@ class JacLangJaseciTests(IsolatedAsyncioTestCase):
         self.assertEqual({"val": []}, report["context"])
 
         first_user_node_id = report["id"]
+
         res = self.post_api(f"update_list_field/{first_user_node_id}")
         self.assertEqual(200, res["status"])
         self.assertEqual([None], res["returns"])

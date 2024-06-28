@@ -1,7 +1,9 @@
 """Walker API Plugin."""
 
+from asyncio import get_event_loop
 from dataclasses import Field, _MISSING_TYPE, dataclass, is_dataclass
 from inspect import iscoroutine
+from os import getenv
 from pydoc import locate
 from re import compile
 from typing import Any, Callable, Optional, Type, TypeVar, Union, cast
@@ -31,6 +33,7 @@ from ..utils import make_optional
 
 
 T = TypeVar("T")
+DISABLE_AUTO_ENDPOINT = getenv("DISABLE_AUTO_ENDPOINT") == "true"
 PATH_VARIABLE_REGEX = compile(r"{([^\}]+)}")
 FILE = {
     "File": UploadFile,
@@ -49,6 +52,7 @@ class DefaultSpecs:
     methods: list[str] = ["post"]
     as_query: Union[str, list[str]] = []
     auth: bool = True
+    private: bool = False
 
 
 @dataclass(eq=False)
@@ -143,7 +147,13 @@ class JacPlugin:
 
     @staticmethod
     @hookimpl
-    async def spawn_call(op1: Architype, op2: Architype) -> WalkerArchitype:
+    def spawn_call(op1: Architype, op2: Architype) -> WalkerArchitype:
+        """Jac's spawn operator feature."""
+        return get_event_loop().run_until_complete(JacPlugin._spawn_call(op1, op2))
+
+    @staticmethod
+    @hookimpl
+    async def _spawn_call(op1: Architype, op2: Architype) -> WalkerArchitype:
         """Jac's spawn operator feature."""
         if isinstance(op1, WalkerArchitype):
             return await op1._jac_.spawn_call(op2)
@@ -156,7 +166,7 @@ class JacPlugin:
     @hookimpl
     def get_root() -> Architype:
         """Jac's assign comprehension feature."""
-        jctx: JacContext = JCONTEXT.get()
+        jctx: JacContext = JacContext.get_context()
         current_root = root
         if jctx:
             current_root = jctx.root
@@ -166,7 +176,7 @@ class JacPlugin:
     @hookimpl
     def report(expr: Any) -> Any:  # noqa: ANN401
         """Jac's report stmt feature."""
-        jctx: JacContext = JCONTEXT.get()
+        jctx: JacContext = JacContext.get_context()
         jctx.report(expr)
 
 
@@ -174,7 +184,9 @@ def get_specs(cls: type) -> Optional[Type[DefaultSpecs]]:
     """Get Specs and inherit from DefaultSpecs."""
     specs = getattr(cls, "Specs", None)
     if specs is None:
-        return None
+        if DISABLE_AUTO_ENDPOINT:
+            return None
+        specs = DefaultSpecs
 
     if not issubclass(specs, DefaultSpecs):
         specs = type(specs.__name__, (specs, DefaultSpecs), {})
@@ -196,7 +208,7 @@ def gen_model_field(cls: type, field: Field, is_file: bool = False) -> tuple[typ
 
 def populate_apis(cls: type) -> None:
     """Generate FastAPI endpoint based on WalkerArchitype class."""
-    if specs := get_specs(cls):
+    if (specs := get_specs(cls)) and not specs.private:
         path: str = specs.path or ""
         methods: list = specs.methods or []
         as_query: Union[str, list] = specs.as_query or []
@@ -265,8 +277,9 @@ def populate_apis(cls: type) -> None:
             jctx = JacContext(request=request, entry=node)
             JCONTEXT.set(jctx)
 
-            wlk = cls(**body, **pl["query"], **pl["files"])._jac_
+            wlk: WalkerAnchor = cls(**body, **pl["query"], **pl["files"])._jac_
             await wlk.spawn_call(await jctx.get_entry())
+            await jctx.clean_up()
             return ORJSONResponse(jctx.response(wlk.returns))
 
         async def api_root(
