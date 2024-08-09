@@ -1,7 +1,7 @@
 """Mail Handler."""
 
 from os import getenv
-from typing import Optional, cast
+from typing import cast
 
 from sendgrid import SendGridAPIClient
 
@@ -9,7 +9,7 @@ from sendgrid import SendGridAPIClient
 class Emailer:
     """Email Handler."""
 
-    __client__: Optional[object] = None
+    __client__: object | None = None
 
     @classmethod
     def start(cls) -> None:
@@ -23,12 +23,12 @@ class Emailer:
         return bool(Emailer.__client__)
 
     @classmethod
-    def generate_client(cls) -> Optional[object]:
+    def generate_client(cls) -> object | None:
         """Generate client."""
         pass
 
     @classmethod
-    def get_client(cls) -> Optional[object]:
+    def get_client(cls) -> object | None:
         """Retrieve client."""
         if Emailer.__client__:
             return Emailer.__client__
@@ -51,6 +51,11 @@ class Emailer:
         """Send Verification Code."""
         raise Exception("send_verification_code not implemented yet.")
 
+    @classmethod
+    def send_reset_code(cls, code: str, email: str) -> None:
+        """Send Verification Code."""
+        raise Exception("send_reset_code not implemented yet.")
+
 
 class SendGridEmailer(Emailer):
     """SendGrid Handler."""
@@ -58,7 +63,7 @@ class SendGridEmailer(Emailer):
     __host__: str = getenv("HOST") or "http://localhost:8000"
 
     @classmethod
-    def generate_client(cls) -> Optional[SendGridAPIClient]:
+    def generate_client(cls) -> SendGridAPIClient | None:
         """Generate client."""
         if sendgrid_api_key := getenv("SENDGRID_API_KEY"):
             return SendGridAPIClient(api_key=sendgrid_api_key)
@@ -97,6 +102,25 @@ class SendGridEmailer(Emailer):
                 {
                     "type": "text/html",
                     "value": f'{code}<br><a href="{url}">Verify</a>',
+                },
+            ],
+        )
+
+    @classmethod
+    def send_reset_code(cls, code: str, email: str) -> None:
+        """Send Reset Code."""
+        url = f"{cls.__host__}/reset_password?code={code}"
+        cls.send_email(
+            subject="Password Reset",
+            recipients=[{"email": email}],
+            content=[
+                {
+                    "type": "text/plain",
+                    "value": f"{code}\n\n{url}",
+                },
+                {
+                    "type": "text/html",
+                    "value": f'{code}<br><a href="{url}">Reset Password</a>',
                 },
             ],
         )

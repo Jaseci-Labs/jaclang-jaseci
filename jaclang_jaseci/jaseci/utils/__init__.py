@@ -4,7 +4,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from random import choice
 from string import ascii_letters, digits
-from typing import Optional, Union, cast, get_args, get_origin
+
+from .mail import Emailer, SendGridEmailer
 
 
 def random_string(length: int) -> str:
@@ -22,13 +23,14 @@ def utc_timestamp(**addons: int) -> int:
     return int(utc_datetime(**addons).timestamp())
 
 
-def make_optional(cls: type) -> type:
-    """Check if the type hint is Optional."""
-    # An Optional type will be represented as Union[type, NoneType]
-    if get_origin(cls) is Union and type(None) in get_args(cls):
-        return cls
-    return cast(type, Optional[cls])
-
-
 logger = logging.getLogger(__name__)
 # logger.addHandler(logging.StreamHandler(sys.stdout))
+
+__all__ = [
+    "Emailer",
+    "SendGridEmailer",
+    "random_string",
+    "utc_datetime",
+    "utc_timestamp",
+    "logger",
+]

@@ -7,9 +7,7 @@ from typing import (
     Generic,
     Iterable,
     Mapping,
-    Optional,
     TypeVar,
-    Union,
     cast,
 )
 
@@ -21,12 +19,18 @@ from motor.motor_asyncio import (
     AsyncIOMotorCollection,
     AsyncIOMotorCursor,
     AsyncIOMotorDatabase,
+    AsyncIOMotorLatentCommandCursor,
 )
 
 from pymongo import DeleteMany, DeleteOne, IndexModel, InsertOne, UpdateMany, UpdateOne
+from pymongo.results import (
+    BulkWriteResult,
+    DeleteResult,
+    InsertManyResult,
+    InsertOneResult,
+    UpdateResult,
+)
 from pymongo.server_api import ServerApi
-
-from .utils import logger
 
 T = TypeVar("T")
 
@@ -43,9 +47,9 @@ class Collection(Generic[T]):
     ##########################################
 
     # Collection Name
-    __collection__: Optional[str] = None
+    __collection__: str | None = None
     # Singleton Collection Instance
-    __collection_obj__: Optional[AsyncIOMotorCollection] = None
+    __collection_obj__: AsyncIOMotorCollection | None = None
 
     # Custom Index Declaration
     __indexes__: list[dict] = []
@@ -54,16 +58,16 @@ class Collection(Generic[T]):
     # Transient Field List
     __excluded__: list = []
     # Converted Mapping of Transient Fields
-    __excluded_obj__: Optional[Mapping[str, Any]] = None
+    __excluded_obj__: Mapping[str, Any] | None = None
 
     ##########################################
     # ---------- Parent Properties --------- #
     ##########################################
 
     # Singleton client instance
-    __client__: Optional[AsyncIOMotorClient] = None
+    __client__: AsyncIOMotorClient | None = None
     # Singleton database instance
-    __database__: Optional[AsyncIOMotorDatabase] = None
+    __database__: AsyncIOMotorDatabase | None = None
 
     @staticmethod
     async def apply_indexes() -> None:
@@ -140,7 +144,7 @@ class Collection(Generic[T]):
         """Return pymongo.database.Database for database connection based from current client connection."""
         if not isinstance(Collection.__database__, AsyncIOMotorDatabase):
             Collection.__database__ = Collection.get_client().get_database(
-                getenv("DATABASE_NAME", "jaclang")
+                getenv("DATABASE_NAME", "jaseci")
             )
 
         return Collection.__database__
@@ -164,93 +168,65 @@ class Collection(Generic[T]):
     async def insert_one(
         cls,
         doc: dict,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> Optional[ObjectId]:
+    ) -> InsertOneResult:
         """Insert single document and return the inserted id."""
-        try:
-            ops = await cls.collection().insert_one(doc, session=session, **kwargs)
-            return ops.inserted_id
-        except Exception:
-            if session:
-                raise
-            logger.exception(f"Error inserting doc:\n{doc}")
-        return None
+        return await cls.collection().insert_one(doc, session=session, **kwargs)
 
     @classmethod
     async def insert_many(
         cls,
         docs: list[dict],
-        session: Optional[AsyncIOMotorClientSession] = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> list[ObjectId]:
+    ) -> InsertManyResult:
         """Insert multiple documents and return the inserted ids."""
-        try:
-            ops = await cls.collection().insert_many(docs, session=session, **kwargs)
-            return ops.inserted_ids
-        except Exception:
-            if session:
-                raise
-            logger.exception(f"Error inserting docs:\n{docs}")
-        return []
+        return await cls.collection().insert_many(docs, session=session, **kwargs)
 
     @classmethod
     async def update_one(
         cls,
         filter: dict,
         update: dict,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> int:
+    ) -> UpdateResult:
         """Update single document and return if it's modified or not."""
-        try:
-            ops = await cls.collection().update_one(
-                filter, update, session=session, **kwargs
-            )
-            return ops.modified_count
-        except Exception:
-            if session:
-                raise
-            logger.exception(f"Error updating doc:\n{filter}\n{update}")
-        return 0
+        return await cls.collection().update_one(
+            filter, update, session=session, **kwargs
+        )
 
     @classmethod
     async def update_many(
         cls,
         filter: dict,
         update: dict,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> int:
+    ) -> UpdateResult:
         """Update multiple documents and return how many docs are modified."""
-        try:
-            ops = await cls.collection().update_many(
-                filter, update, session=session, **kwargs
-            )
-            return ops.modified_count
-        except Exception:
-            if session:
-                raise
-            logger.exception(f"Error updating doc:\n{filter}\n{update}")
-        return 0
+        return await cls.collection().update_many(
+            filter, update, session=session, **kwargs
+        )
 
     @classmethod
     async def update_by_id(
         cls,
-        id: Union[str, ObjectId],
+        id: str | ObjectId,
         update: dict,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> int:
+    ) -> UpdateResult:
         """Update single document via ID and return if it's modified or not."""
         return await cls.update_one({"_id": ObjectId(id)}, update, session, **kwargs)
 
     @classmethod
     async def find(
         cls,
-        filter: Optional[Mapping[str, Any]] = None,
-        projection: Optional[Union[Mapping[str, Any], Iterable[str]]] = None,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        filter: Mapping[str, Any] | None = None,
+        projection: Mapping[str, Any] | Iterable[str] | None = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
     ) -> AsyncGenerator[T, None]:
         """Retrieve multiple documents."""
@@ -263,11 +239,11 @@ class Collection(Generic[T]):
     @classmethod
     async def find_one(
         cls,
-        filter: Optional[Mapping[str, Any]] = None,
-        projection: Optional[Union[Mapping[str, Any], Iterable[str]]] = None,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        filter: Mapping[str, Any] | None = None,
+        projection: Mapping[str, Any] | Iterable[str] | None = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> Optional[T]:
+    ) -> T | None:
         """Retrieve single document from db."""
         if projection is None:
             projection = cls.__excluded_obj__
@@ -276,16 +252,16 @@ class Collection(Generic[T]):
             filter, projection, session=session, **kwargs
         ):
             return cls.__document__(ops)
-        return cast(Optional[T], ops)
+        return None
 
     @classmethod
     async def find_by_id(
         cls,
-        id: Union[str, ObjectId],
-        projection: Optional[Union[Mapping[str, Any], Iterable[str]]] = None,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        id: str | ObjectId,
+        projection: Mapping[str, Any] | Iterable[str] | None = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> Optional[T]:
+    ) -> T | None:
         """Retrieve single document via ID."""
         return await cls.find_one(
             {"_id": ObjectId(id)}, projection, session=session, **kwargs
@@ -295,59 +271,61 @@ class Collection(Generic[T]):
     async def delete(
         cls,
         filter: dict,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> int:
+    ) -> DeleteResult:
         """Delete document/s via filter and return how many documents are deleted."""
-        try:
-            ops = await cls.collection().delete_many(filter, session=session, **kwargs)
-            return ops.deleted_count
-        except Exception:
-            if session:
-                raise
-            logger.exception(f"Error delete with filter:\n{filter}")
-        return 0
+        return await cls.collection().delete_many(filter, session=session, **kwargs)
 
     @classmethod
     async def delete_one(
         cls,
         filter: dict,
-        session: Optional[AsyncIOMotorClientSession] = None,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> int:
+    ) -> DeleteResult:
         """Delete single document via filter and return if it's deleted or not."""
-        try:
-            ops = await cls.collection().delete_one(filter, session=session, **kwargs)
-            return ops.deleted_count
-        except Exception:
-            if session:
-                raise
-            logger.exception(f"Error delete one with filter:\n{filter}")
-        return 0
+        return await cls.collection().delete_one(filter, session=session, **kwargs)
 
     @classmethod
     async def delete_by_id(
         cls,
-        id: Union[str, ObjectId],
-        session: Optional[AsyncIOMotorClientSession] = None,
+        id: str | ObjectId,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> int:
+    ) -> DeleteResult:
         """Delete single document via ID and return if it's deleted or not."""
         return await cls.delete_one({"_id": ObjectId(id)}, session, **kwargs)
 
     @classmethod
     async def bulk_write(
         cls,
-        ops: list[Union[InsertOne, DeleteMany, DeleteOne, UpdateMany, UpdateOne]],
-        session: Optional[AsyncIOMotorClientSession] = None,
+        ops: list[InsertOne | DeleteMany | DeleteOne | UpdateMany | UpdateOne],
+        ordered: bool = True,
+        session: AsyncIOMotorClientSession | None = None,
         **kwargs: Any,  # noqa: ANN401
-    ) -> dict:
+    ) -> BulkWriteResult:
         """Bulk write operations."""
-        try:
-            _ops = await cls.collection().bulk_write(ops, session=session, **kwargs)
-            return _ops.bulk_api_result
-        except Exception:
-            if session:
-                raise
-            logger.exception(f"Error bulk write:\n{ops}")
-        return {}
+        return await cls.collection().bulk_write(
+            ops, ordered=ordered, session=session, **kwargs
+        )
+
+    @classmethod
+    async def count(
+        cls,
+        filter: dict,
+        session: AsyncIOMotorClientSession | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> int:
+        """Bulk write operations."""
+        return await cls.collection().count_documents(filter, session, **kwargs)
+
+    @classmethod
+    async def aggregate(
+        cls,
+        pipeline: list[dict],
+        session: AsyncIOMotorClientSession | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> AsyncIOMotorLatentCommandCursor:
+        """Bulk write operations."""
+        return cls.collection().aggregate(pipeline, session, **kwargs)

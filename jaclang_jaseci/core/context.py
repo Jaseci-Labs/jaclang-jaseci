@@ -1,21 +1,28 @@
 """Core constructs for Jac Language."""
 
-from __future__ import annotations
-
 from contextvars import ContextVar
+from dataclasses import asdict, is_dataclass
 from os import getenv
-from typing import Any, Callable, Optional, Union, cast
+from typing import Any, Callable, cast
 
 from bson import ObjectId
 
 from fastapi import Request
 
-from jaclang.core.memory import Memory
+from .architype import (
+    AccessLevel,
+    Anchor,
+    AnchorState,
+    Architype,
+    NodeAnchor,
+    Permission,
+    Root,
+)
+from .memory import MongoDB
 
-from .architype import Anchor, Architype, NodeAnchor, Root
 
 SHOW_ENDPOINT_RETURNS = getenv("SHOW_ENDPOINT_RETURNS") == "true"
-JASECI_CONTEXT = ContextVar[Optional["JaseciContext"]]("JaseciContext")
+JASECI_CONTEXT = ContextVar["JaseciContext | None"]("JaseciContext")
 SUPER_ROOT = ObjectId("000000000000000000000000")
 PUBLIC_ROOT = ObjectId("000000000000000000000001")
 
@@ -23,24 +30,18 @@ PUBLIC_ROOT = ObjectId("000000000000000000000001")
 class JaseciContext:
     """Execution Context."""
 
-    def __init__(
-        self,
-        request: Optional[Request] = None,
-        entry: Optional[NodeAnchor] = None,
-        **ignored: Any,  # noqa: ANN401
-    ) -> None:
-        """Create JacContext."""
-        self.datasource: Memory = Memory()
-        self.reports: list[Any] = []
-        self.super_root = self.load(NodeAnchor(id=SUPER_ROOT), self.generate_super_root)
-        self.root: NodeAnchor = getattr(request, "_root", None) or self.load(
-            NodeAnchor(id=PUBLIC_ROOT), self.generate_public_root
-        )
-        self.entry: NodeAnchor = self.load(entry, self.root)
+    request: Request
+    datasource: MongoDB
+    reports: list
+    super_root: NodeAnchor
+    root: NodeAnchor
+    entry: NodeAnchor
 
     def generate_super_root(self) -> NodeAnchor:
         """Generate default super root."""
-        super_root = NodeAnchor(id=SUPER_ROOT, current_access_level=2)
+        super_root = NodeAnchor(
+            id=SUPER_ROOT, state=AnchorState(current_access_level=AccessLevel.WRITE)
+        )
         architype = super_root.architype = object.__new__(Root)
         architype.__jac__ = super_root
         self.datasource.set(super_root)
@@ -48,35 +49,76 @@ class JaseciContext:
 
     def generate_public_root(self) -> NodeAnchor:
         """Generate default super root."""
-        public_root = NodeAnchor(id=PUBLIC_ROOT, current_access_level=2)
+        public_root = NodeAnchor(
+            id=PUBLIC_ROOT,
+            access=Permission(all=AccessLevel.WRITE),
+            state=AnchorState(current_access_level=AccessLevel.WRITE),
+        )
         architype = public_root.architype = object.__new__(Root)
         architype.__jac__ = public_root
         self.datasource.set(public_root)
         return public_root
 
-    def load(
+    async def load(
         self,
-        anchor: Optional[NodeAnchor],
-        default: Union[NodeAnchor, Callable[[], NodeAnchor]],
+        anchor: NodeAnchor | None,
+        default: NodeAnchor | Callable[[], NodeAnchor],
     ) -> NodeAnchor:
         """Load initial anchors."""
-        if anchor and (_anchor := self.datasource.find_one(anchor.id)):
-            anchor.__dict__.update(_anchor.__dict__)
-            anchor.current_access_level = 2
-        else:
-            anchor = default() if callable(default) else default
-        return anchor
+        if anchor:
+            if not anchor.state.connected:
+                if _anchor := await self.datasource.find_one(NodeAnchor, anchor):
+                    _anchor.state.current_access_level = AccessLevel.WRITE
+                    return _anchor
+            else:
+                self.datasource.set(anchor)
+                return anchor
 
-    def close(self) -> None:
+        return default() if callable(default) else default
+
+    async def validate_access(self) -> bool:
+        """Validate access."""
+        return await self.root.has_read_access(self.entry)
+
+    async def close(self) -> None:
         """Clean up context."""
-        self.datasource.close()
+        await self.datasource.close()
 
     @staticmethod
-    def get(options: Optional[dict[str, Any]] = None) -> JaseciContext:
-        """Get or create execution context."""
-        if not isinstance(ctx := JASECI_CONTEXT.get(None), JaseciContext):
-            JASECI_CONTEXT.set(ctx := JaseciContext(**options or {}))
+    async def create(
+        request: Request, entry: NodeAnchor | None = None
+    ) -> "JaseciContext":
+        """Create JacContext."""
+        ctx = JaseciContext()
+        ctx.request = request
+        ctx.datasource = MongoDB()
+        ctx.reports = []
+        ctx.super_root = await ctx.load(
+            NodeAnchor(id=SUPER_ROOT), ctx.generate_super_root
+        )
+        ctx.root = await ctx.load(
+            getattr(request, "_root", None) or NodeAnchor(id=PUBLIC_ROOT),
+            ctx.generate_public_root,
+        )
+        ctx.entry = await ctx.load(entry, ctx.root)
+
+        if _ctx := JASECI_CONTEXT.get(None):
+            await _ctx.close()
+        JASECI_CONTEXT.set(ctx)
+
         return ctx
+
+    @staticmethod
+    def get() -> "JaseciContext":
+        """Get current ExecutionContext."""
+        if not isinstance(ctx := JASECI_CONTEXT.get(None), JaseciContext):
+            raise Exception("JaseciContext is not yet available!")
+        return ctx
+
+    @staticmethod
+    def get_datasource() -> MongoDB:
+        """Get current datasource."""
+        return JaseciContext.get().datasource
 
     def response(self, returns: list[Any], status: int = 200) -> dict[str, Any]:
         """Return serialized version of reports."""
@@ -84,14 +126,11 @@ class JaseciContext:
 
         if self.reports:
             for key, val in enumerate(self.reports):
-                match val:
-                    case Anchor():
-                        self.reports[key] = val.report()
-                    case Architype():
-                        self.reports[key] = val.__jac__.report()
-                    case _:
-                        self.clean_response(key, val, self.reports)
+                self.clean_response(key, val, self.reports)
             resp["reports"] = self.reports
+
+        for key, val in enumerate(returns):
+            self.clean_response(key, val, returns)
 
         if not SHOW_ENDPOINT_RETURNS:
             resp.pop("returns")
@@ -99,7 +138,7 @@ class JaseciContext:
         return resp
 
     def clean_response(
-        self, key: Union[str, int], val: Any, obj: Union[list, dict]  # noqa: ANN401
+        self, key: str | int, val: Any, obj: list | dict  # noqa: ANN401
     ) -> None:
         """Cleanup and override current object."""
         match val:
@@ -113,5 +152,7 @@ class JaseciContext:
                 cast(dict, obj)[key] = val.report()
             case Architype():
                 cast(dict, obj)[key] = val.__jac__.report()
+            case val if is_dataclass(val) and not isinstance(val, type):
+                cast(dict, obj)[key] = asdict(val)
             case _:
                 pass

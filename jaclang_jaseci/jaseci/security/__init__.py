@@ -1,7 +1,7 @@
 """Jaseci Securities."""
 
 from os import getenv
-from typing import Any, Optional
+from typing import Any
 
 from bson import ObjectId
 
@@ -11,14 +11,17 @@ from fastapi.security import HTTPBearer
 
 from jwt import decode, encode
 
-from .architype import Root
-from .model import User as BaseUser
-from .redis import CodeRedis, TokenRedis
-from .utils import logger, random_string, utc_timestamp
+from ..datasources.redis import CodeRedis, TokenRedis
+from ..models.user import User as BaseUser
+from ..utils import logger, random_string, utc_timestamp
+from ...core.architype import AccessLevel, NodeAnchor
 
 
 TOKEN_SECRET = getenv("TOKEN_SECRET", random_string(50))
 TOKEN_ALGORITHM = getenv("TOKEN_ALGORITHM", "HS256")
+VERIFICATION_CODE_TIMEOUT = int(getenv("VERIFICATION_CODE_TIMEOUT") or "24")
+RESET_CODE_TIMEOUT = int(getenv("RESET_CODE_TIMEOUT") or "24")
+TOKEN_TIMEOUT = int(getenv("TOKEN_TIMEOUT") or "12")
 User = BaseUser.model()
 
 
@@ -27,7 +30,7 @@ def encrypt(data: dict) -> str:
     return encode(data, key=TOKEN_SECRET, algorithm=TOKEN_ALGORITHM)
 
 
-def decrypt(token: str) -> Optional[dict]:
+def decrypt(token: str) -> dict | None:
     """Decrypt data."""
     try:
         return decode(token, key=TOKEN_SECRET, algorithms=[TOKEN_ALGORITHM])
@@ -36,13 +39,14 @@ def decrypt(token: str) -> Optional[dict]:
         return None
 
 
-async def create_code(user_id: ObjectId) -> str:
+async def create_code(user_id: ObjectId, reset: bool = False) -> str:
     """Generate Verification Code."""
     verification = encrypt(
         {
             "user_id": str(user_id),
+            "reset": reset,
             "expiration": utc_timestamp(
-                hours=int(getenv("VERIFICATION_TIMEOUT") or "24")
+                hours=RESET_CODE_TIMEOUT if reset else VERIFICATION_CODE_TIMEOUT
             ),
         }
     )
@@ -51,26 +55,33 @@ async def create_code(user_id: ObjectId) -> str:
     raise HTTPException(500, "Verification Creation Failed!")
 
 
-async def verify_code(code: str) -> Optional[str]:
+async def verify_code(code: str, reset: bool = False) -> ObjectId | None:
     """Verify Code."""
     decrypted = decrypt(code)
     if (
         decrypted
+        and decrypted["reset"] == reset
         and decrypted["expiration"] > utc_timestamp()
         and await CodeRedis.hget(key=code)
     ):
-        return decrypted["user_id"]
+        await CodeRedis.hdelete(code)
+        return ObjectId(decrypted["user_id"])
     return None
 
 
 async def create_token(user: dict[str, Any]) -> str:
     """Generate token for current user."""
-    user["expiration"] = utc_timestamp(hours=int(getenv("TOKEN_TIMEOUT") or "12"))
+    user["expiration"] = utc_timestamp(hours=TOKEN_TIMEOUT)
     user["state"] = random_string(8)
     token = encrypt(user)
-    if await TokenRedis.hset(key=token, data=True):
+    if await TokenRedis.hset(f"{user['id']}:{token}", True):
         return token
     raise HTTPException(500, "Token Creation Failed!")
+
+
+async def invalidate_token(user_id: ObjectId) -> None:
+    """Invalidate token of current user."""
+    await TokenRedis.hdelete_rgx(f"{user_id}:*")
 
 
 async def authenticate(request: Request) -> None:
@@ -82,11 +93,11 @@ async def authenticate(request: Request) -> None:
         if (
             decrypted
             and decrypted["expiration"] > utc_timestamp()
-            and await TokenRedis.hget(key=token)
-            and (user := await User.__collection__.find_by_id(decrypted["id"]))
-            and (root := await Root.__collection__.find_by_id(user.root_id))
+            and await TokenRedis.hget(f"{decrypted['id']}:{token}")
+            and (user := await User.Collection.find_by_id(decrypted["id"]))
+            and (root := await NodeAnchor.Collection.find_by_id(user.root_id))
         ):
-            root.__jac__.current_access_level = 1
+            root.state.current_access_level = AccessLevel.WRITE
             request._user = user  # type: ignore[attr-defined]
             request._root = root  # type: ignore[attr-defined]
             return

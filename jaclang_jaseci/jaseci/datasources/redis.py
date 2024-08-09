@@ -1,14 +1,14 @@
 """Jaseci Redis."""
 
 from os import getenv
-from typing import Any, Optional, Union, cast
+from typing import Any
 
 from orjson import dumps, loads
 
 from redis import asyncio as aioredis
 from redis.asyncio.client import Redis as _Redis
 
-from .utils import logger
+from ..utils import logger
 
 
 class Redis:
@@ -30,7 +30,7 @@ class Redis:
     ##########################################
 
     # Singleton redis client instance
-    __redis__: Optional[_Redis] = None
+    __redis__: _Redis | None = None
 
     @staticmethod
     def get_rd() -> _Redis:
@@ -49,7 +49,9 @@ class Redis:
         """Retrieve via key."""
         try:
             redis = cls.get_rd()
-            return loads(cast(str, await redis.get(key)))
+            if res := await redis.get(key):
+                return loads(res)
+            return None
         except Exception:
             logger.exception(f"Error getting key {key}")
             return None
@@ -65,7 +67,7 @@ class Redis:
             return []
 
     @classmethod
-    async def set(cls, key: str, data: Union[dict, bool]) -> bool:
+    async def set(cls, key: str, data: dict | bool) -> bool:
         """Push key value pair."""
         try:
             redis = cls.get_rd()
@@ -89,7 +91,9 @@ class Redis:
         """Retrieve via key from group."""
         try:
             redis = cls.get_rd()
-            return loads(cast(str, await redis.hget(cls.__table__, key)))
+            if res := await redis.hget(cls.__table__, key):
+                res = loads(res)
+            return res
         except Exception:
             logger.exception(f"Error getting key {key} from {cls.__table__}")
 
@@ -104,7 +108,7 @@ class Redis:
             return []
 
     @classmethod
-    async def hset(cls, key: str, data: Union[dict, bool]) -> bool:
+    async def hset(cls, key: str, data: dict | bool) -> bool:
         """Push key value pair to group."""
         try:
             redis = cls.get_rd()
@@ -123,6 +127,18 @@ class Redis:
             return bool(await redis.hdel(cls.__table__, *keys))
         except Exception:
             logger.exception(f"Error deleting key {keys} from {cls.__table__}")
+            return False
+
+    @classmethod
+    async def hdelete_rgx(cls, key: str) -> bool:
+        """Delete via key pattern from group."""
+        try:
+            redis = cls.get_rd()
+            async for hkeys in redis.hscan_iter(cls.__table__, key):
+                await redis.hdel(cls.__table__, *hkeys)
+            return True
+        except Exception:
+            logger.exception(f"Error deleting key {key} from {cls.__table__}")
             return False
 
 
