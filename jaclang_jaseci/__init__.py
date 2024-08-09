@@ -1,12 +1,10 @@
-"""JacLang FastAPI."""
+"""JacLang Jaseci."""
 
 from dotenv import find_dotenv, load_dotenv
 
-from .core import FastAPI
+from .jaseci import FastAPI
 
 
 load_dotenv(find_dotenv(), override=True)
 
-start = FastAPI.start
-
-__all__ = ["FastAPI", "start"]
+__all__ = ["FastAPI"]
